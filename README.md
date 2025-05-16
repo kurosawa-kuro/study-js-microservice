@@ -37,12 +37,12 @@
 
 ## 3. サービス一覧
 
-| サービス                  | ポート  | 主責務                                   | 主要エンドポイント                                 | 依存リソース                 |
-| --------------------- | ---- | ------------------------------------- | ----------------------------------------- | ---------------------- |
-| **user-service**      | 3000 | ユーザ CRUD, UserCreated イベント発行          | `POST /users`, `GET /users/:id`           | user-db, RabbitMQ      |
-| **micropost-service** | 3000 | マイクロポスト CRUD, MicropostCreated イベント発行 | `POST /microposts`, `GET /microposts/:id` | micropost-db, RabbitMQ |
-| **category-service**  | 3000 | カテゴリ CRUD, カテゴリと Micropost の関連付け      | `POST /categories`, `GET /categories/:id` | category-db, RabbitMQ  |
-| **api-gateway**       | 80   | ルーティング／LB／CORS                        | `/user-service/*` など                      | ‑                      |
+| サービス                  | ポート  | 主責務                                      | 主要エンドポイント                                 | 依存リソース                 |
+| --------------------- | ---- | ---------------------------------------- | ----------------------------------------- | ---------------------- |
+| **user-service**      | 3000 | ユーザ CRUD, UserCreated.v1 イベント発行          | `POST /users`, `GET /users/:id`           | user-db, RabbitMQ      |
+| **micropost-service** | 3000 | マイクロポスト CRUD, MicropostCreated.v1 イベント発行 | `POST /microposts`, `GET /microposts/:id` | micropost-db, RabbitMQ |
+| **category-service**  | 3000 | カテゴリ CRUD, カテゴリと Micropost の関連付け         | `POST /categories`, `GET /categories/:id` | category-db, RabbitMQ  |
+| **api-gateway**       | 80   | ルーティング／LB／CORS                           | `/user-service/*` など                      | -                      |
 
 > すべて **TypeScript + Express + express‑async‑errors** 実装。非同期例外はグローバルハンドラへ集約。
 
@@ -61,26 +61,27 @@
 
 ```prisma
 model User {
-  id          String       @id @default(uuid())
-  name        String
-  email       String       @unique
-  microposts  Micropost[]
-  createdAt   DateTime     @default(now())
+  id            String       @id @default(uuid())
+  name          String
+  email         String       @unique
+  passwordHash  String       // 認証導入に備え追加
+  microposts    Micropost[]
+  createdAt     DateTime     @default(now())
 }
 
 model Micropost {
-  id        String       @id @default(uuid())
-  content   String
-  userId    String
-  user      User         @relation(fields: [userId], references: [id])
-  categories Category[]  @relation("MicropostCategories", references: [id])
-  createdAt DateTime     @default(now())
+  id          String       @id @default(uuid())
+  content     String       @db.VarChar(280) // 文字数制限を設定
+  userId      String
+  user        User         @relation(fields: [userId], references: [id])
+  categories  Category[]   @relation("MicropostCategories", references: [id])
+  createdAt   DateTime     @default(now())
 }
 
 model Category {
-  id         String        @id @default(uuid())
-  name       String        @unique
-  microposts Micropost[]   @relation("MicropostCategories")
+  id          String        @id @default(uuid())
+  name        String        @unique
+  microposts  Micropost[]   @relation("MicropostCategories")
 }
 ```
 
@@ -90,12 +91,13 @@ model Category {
 
 ## 5. 非同期メッセージング
 
-| イベント                | Exchange            | Type   | 発行元               | サブスクライバ                     |
-| ------------------- | ------------------- | ------ | ----------------- | --------------------------- |
-| `user.created`      | `user.created`      | fanout | user-service      | micropost-service           |
-| `micropost.created` | `micropost.created` | fanout | micropost-service | category-service (optional) |
+| イベント                   | Exchange               | Type   | 発行元               | サブスクライバ                     |
+| ---------------------- | ---------------------- | ------ | ----------------- | --------------------------- |
+| `user.created.v1`      | `user.created.v1`      | fanout | user-service      | micropost-service           |
+| `micropost.created.v1` | `micropost.created.v1` | fanout | micropost-service | category-service (optional) |
 
 * **ライブラリ**: `amqplib` を `shared/mq.ts` にラップ。
+* **命名規約**: `entity.action.version` 形式でバージョニングを明示。
 * **メッセージフォーマット**: JSON + `messageId`, `timestamp`, `payload`。
 
 ---
@@ -103,6 +105,12 @@ model Category {
 ## 6. API Gateway (Nginx) 設定例
 
 ```nginx
+# 共通ヘッダをパススルー
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+
 location /user-service/ {
   rewrite /user-service/(.*) /$1 break;
   proxy_pass http://user-service:3000;
@@ -144,6 +152,19 @@ services:
 volumes:
   user-data:
 ```
+
+---
+
+## 8. CI/CD パイプライン
+
+* **GitHub Actions** を使用。
+* ワークフロー例:
+
+  1. `on: [push]`
+  2. ジョブ `test`―ESLint + Jest 実行
+  3. ジョブ `build`―マルチステージ Docker Build → GHCR へ Push
+  4. ジョブ `deploy`（optional）―Argo CD または ECS へイメージタグ更新
+* `.github/workflows/ci.yml` テンプレートを `shared/ci` に格納。
 
 ---
 
